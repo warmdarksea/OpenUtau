@@ -1,0 +1,9 @@
+[submodule "OpenUtau.DawPlugin/3rdparty/JUCE"]
+	path = OpenUtau.DawPlugin/3rdparty/JUCE
+	url = https://github.com/dsp56300/JUCE
+[submodule "OpenUtau.DawPlugin/3rdparty/clap-juce-extensions"]
+	path = OpenUtau.DawPlugin/3rdparty/clap-juce-extensions
+	url = https://github.com/dsp56300/clap-juce-extensions
+[submodule "OpenUtau.DawPlugin/3rdparty/xxHash"]
+	path = OpenUtau.DawPlugin/3rdparty/xxHash
+	url = https://github.com/Cyan4973/xxHash
