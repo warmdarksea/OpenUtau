@@ -22,6 +22,11 @@ private:
     void timerCallback() override;
     void refresh();
     void rebuildTrackChoices();
+    // HiDPI: resolve the effective scale and apply it as the editor transform.
+    // VST3 and CLAP hosts hand a content scale to the wrapper; VST2 has no such
+    // channel on Linux, so "Auto" falls back to the display's own scale there.
+    float automaticScale() const;
+    void applyScale();
 
     BridgeProcessor& bridge;
     int lastRevision = -1;
@@ -33,6 +38,8 @@ private:
     juce::TextEditor trackList;
     juce::Label modeLabel;
     juce::ComboBox trackChoice;
+    juce::Label scaleLabel;
+    juce::ComboBox scaleChoice;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BridgeEditor)
 };

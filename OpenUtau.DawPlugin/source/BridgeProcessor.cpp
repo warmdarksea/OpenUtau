@@ -115,14 +115,26 @@ void BridgeProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiB
 }
 
 void BridgeProcessor::getStateInformation(juce::MemoryBlock& destination) {
-    state.save(destination);
+    juce::MemoryBlock stateBlock;
+    state.save(stateBlock);
+    juce::MemoryOutputStream out(destination, false);
+    out.writeInt(uiScale.load());
+    out.write(stateBlock.getData(), stateBlock.getSize());
 }
 
 void BridgeProcessor::setStateInformation(const void* data, int sizeInBytes) {
     if (data == nullptr || sizeInBytes < 4) {
         return;
     }
-    state.restore(data, static_cast<size_t>(sizeInBytes));
+    juce::MemoryInputStream in(data, static_cast<size_t>(sizeInBytes), false);
+    const int first = in.readInt();
+    if (first == 0x4f554252) {  // "OUBR": a chunk from before the scale prefix existed
+        state.restore(data, static_cast<size_t>(sizeInBytes));
+    } else {
+        setUiScalePercent(first);
+        state.restore(juce::addBytesToPointer(data, in.getPosition()),
+                      static_cast<size_t>(in.getNumBytesRemaining()));
+    }
     if (getSampleRate() > 0) {
         state.setTargetSampleRate(getSampleRate());
     }

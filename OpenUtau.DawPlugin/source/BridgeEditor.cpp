@@ -33,11 +33,50 @@ BridgeEditor::BridgeEditor(BridgeProcessor& processorIn)
     };
     addAndMakeVisible(trackChoice);
 
+    scaleLabel.setText("UI scale", juce::dontSendNotification);
+    addAndMakeVisible(scaleLabel);
+    scaleChoice.addItem("Auto", 1);
+    for (const int percent : {75, 100, 125, 150, 175, 200, 250, 300}) {
+        scaleChoice.addItem(juce::String(percent) + "%", percent);
+    }
+    const int storedScale = bridge.uiScalePercent();
+    scaleChoice.setSelectedId(storedScale == 0 ? 1 : storedScale, juce::dontSendNotification);
+    scaleChoice.onChange = [this] {
+        const int id = scaleChoice.getSelectedId();
+        bridge.setUiScalePercent(id == 1 ? 0 : id);
+        applyScale();
+    };
+    addAndMakeVisible(scaleChoice);
+
     setResizable(true, true);
-    setSize(420, 320);
+    setSize(420, 346);
+    applyScale();
     rebuildTrackChoices();
     refresh();
     startTimerHz(4);
+}
+
+float BridgeEditor::automaticScale() const {
+    // Hosts speaking VST3 or CLAP deliver a content scale through the wrapper,
+    // which JUCE already applies on top of this transform - so automatic means
+    // factor 1 there, and anything else would scale twice. VST2 carries no DPI
+    // information on Linux: a plain X11 child window always comes up at 1:1 on
+    // a HiDPI screen, so automatic reads the display's own scale instead.
+    if (bridge.wrapperType == juce::AudioProcessor::wrapperType_VST) {
+        if (const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()) {
+            return static_cast<float>(juce::jlimit(0.5, 3.0, display->scale));
+        }
+    }
+    return 1.0f;
+}
+
+void BridgeEditor::applyScale() {
+    const int percent = bridge.uiScalePercent();
+    const float factor = percent == 0 ? automaticScale() : percent / 100.0f;
+    setTransform(juce::AffineTransform::scale(factor));
+    // Bounds stay in unscaled coordinates; the transform maps them to pixels,
+    // and the wrapper reports the transformed size to the host.
+    setSize(getWidth(), getHeight());
 }
 
 BridgeEditor::~BridgeEditor() {
@@ -109,8 +148,12 @@ void BridgeEditor::resized() {
     status.setBounds(area.removeFromTop(22));
     project.setBounds(area.removeFromTop(22));
     area.removeFromTop(6);
+    auto scaleRow = area.removeFromBottom(26);
+    scaleLabel.setBounds(scaleRow.removeFromLeft(70));
+    scaleChoice.setBounds(scaleRow.removeFromLeft(120));
+    area.removeFromBottom(6);
     auto modeRow = area.removeFromBottom(26);
-    modeLabel.setBounds(modeRow.removeFromLeft(40));
+    modeLabel.setBounds(modeRow.removeFromLeft(70));
     trackChoice.setBounds(modeRow);
     area.removeFromBottom(6);
     trackHeader.setBounds(area.removeFromTop(22));

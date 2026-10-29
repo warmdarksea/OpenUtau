@@ -39,6 +39,14 @@ public:
     BridgeState& bridgeState() { return state; }
     BridgeServer& bridgeServer() { return server; }
 
+    // Editor UI scale preference, persisted with the session: 0 = automatic
+    // (host scale where the format carries one, display scale under VST2),
+    // otherwise a percentage.
+    int uiScalePercent() const { return uiScale.load(); }
+    void setUiScalePercent(int percent) {
+        uiScale.store(percent == 0 ? 0 : juce::jlimit(50, 300, percent));
+    }
+
 private:
     void publishTransport(const juce::AudioPlayHead::PositionInfo& position, double sampleRate);
 
@@ -50,6 +58,7 @@ private:
     double lastSentPlayheadMs = -1.0e9;
     juce::int64 lastPlayheadSendMs = 0;
     double lastSentBpm = 0.0;
+    std::atomic<int> uiScale{0};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BridgeProcessor)
 };
