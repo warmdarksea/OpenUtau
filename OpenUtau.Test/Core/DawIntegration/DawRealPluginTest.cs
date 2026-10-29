@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using OpenUtau.Core.Render;
 using OpenUtau.Core.Ustx;
 using Xunit;
 
@@ -41,6 +42,23 @@ namespace OpenUtau.Core.DawIntegration {
 
         public void Dispose() => manager?.Dispose();
 
+        /// <summary>The minimal singer phrase construction needs, as in <c>DawConformanceTest</c>.</summary>
+        class TestSinger : USinger {
+            private readonly string displayName;
+            public TestSinger(string name) {
+                displayName = name;
+                found = true;
+                loaded = true;
+            }
+            public override string Id => "test-singer";
+            public override string Name => displayName;
+            public override System.Collections.Generic.IList<USubbank> Subbanks => new USubbank[0];
+            public override bool TryGetOto(string phoneme, out UOto oto) {
+                oto = UOto.OfDummy(phoneme);
+                return true;
+            }
+        }
+
         /// <summary>
         /// One track at unity and centre, one part from 2000 ms to 3000 ms. Project defaults are
         /// 4/4 at 120 bpm with 480 ticks per beat, so 480 ticks is 500 ms: the part sits at ticks
@@ -48,22 +66,58 @@ namespace OpenUtau.Core.DawIntegration {
         /// serializes the project for the init handshake, and the USTX serializer refuses an
         /// unsaved project (see <c>DawConformanceTest.BuildProject</c>).
         /// </summary>
+        /// <remarks>
+        /// The part carries a real phrase, exactly like <c>DawConformanceTest.BuildProject</c>:
+        /// <c>DawAudio.TryExtractPart</c> extracts through the part's render request, so a part
+        /// seeded only into the planner (as this fixture originally was) is skipped as unrendered
+        /// and the layout goes out empty — the plugin then has nothing to pull and the peak meter
+        /// below never moves.
+        /// </remarks>
         private static UProject BuildProject() {
             var built = new UProject();
             built.FilePath = Path.Combine(Path.GetTempPath(), "real-plugin-test.ustx");
+            // The expression descriptors phrase construction reads.
+            built.RegisterExpression(new UExpressionDescriptor("engine", "eng", 0, 100, 0) { options = new[] { "" } });
+            built.RegisterExpression(new UExpressionDescriptor("volume", "vol", 0, 100, 100));
+            built.RegisterExpression(new UExpressionDescriptor("velocity", "vel", 0, 100, 100));
+            built.RegisterExpression(new UExpressionDescriptor("modulation", "mod", 0, 100, 0));
+            built.RegisterExpression(new UExpressionDescriptor("direct", "dir", 0, 100, 0));
+            built.RegisterExpression(new UExpressionDescriptor("shift", "shft", 0, 100, 0));
+            built.RegisterExpression(new UExpressionDescriptor("attack", "atk", 0, 100, 100));
+            built.RegisterExpression(new UExpressionDescriptor("decay", "dec", 0, 100, 100));
             built.tracks.Clear();
             built.tracks.Add(new UTrack("Live") { TrackNo = 0, Volume = 0, Pan = 0 });
+            built.tracks[0].Singer = new TestSinger("Live Singer");
             var live = new UVoicePart { name = "Live A", trackNo = 0, position = 1920, duration = 960 };
-            // Seed the transport's slot registry: one Ready slot of constant level
-            // covering the part's 2000 ms .. 3000 ms range.
-            var planner = PlaybackManager.Inst.MixPlanner;
-            planner.BeginSession(new[] {
-                new MixPlanner.SlotSpec(live, 0, 1, 2000, 1000, 1),
-            });
-            planner.RegisterPcm(live, 1, 2000, 1000, 1, Enumerable.Repeat(Level, 44100).ToArray());
             built.parts.Add(live);
             built.timeAxis.BuildSegments(built);
+            AddPhrase(built, built.tracks[0], live, 0, 960);
+            // Seed the transport's slot registry: one Ready slot of constant level
+            // covering the part's 2000 ms .. 3000 ms range, under the phrase's hash.
+            var planner = PlaybackManager.Inst.MixPlanner;
+            planner.BeginSession(new[] {
+                new MixPlanner.SlotSpec(live, 0, live.renderPhrases[0].hash, 2000, 1000, 1),
+            });
+            planner.RegisterPcm(live, live.renderPhrases[0].hash, 2000, 1000, 1,
+                Enumerable.Repeat(Level, 44100).ToArray());
             return built;
+        }
+
+        static void AddPhrase(UProject project, UTrack track, UVoicePart part, int pos, int dur) {
+            var note = UNote.Create();
+            note.position = pos;
+            note.duration = dur;
+            note.tone = 60;
+            note.lyric = "a";
+            note.ExtendedDuration = dur;
+            part.notes.Add(note);
+            var phoneme = new UPhoneme { position = pos, phoneme = "A", Parent = note };
+            part.phonemes.Add(phoneme);
+            phoneme.Validate(new ValidateOptions(), project, track, part, note);
+            if (phoneme.Error) {
+                throw new Exception($"phoneme failed to validate: {phoneme.ErrorException}");
+            }
+            part.renderPhrases.AddRange(RenderPhrase.FromPart(project, track, part));
         }
 
         [Fact]
@@ -106,9 +160,21 @@ namespace OpenUtau.Core.DawIntegration {
             // The last message of the flow, in the direction only the plugin can start it: an edit
             // arms the debounce, and a looping bridge-host reports a fresh start every time the
             // transport jumps back, which §7 says makes everything pending due at once.
-            manager.OnNext(new FakeEdit(), false);
-            await manager.PumpOnceAsync();
-            Assert.True(manager.Scheduler.HasPending, "The edit did not arm the debounce.");
+            //
+            // Arming races the loop on purpose: a wrap's playbackStarted can flush the pending
+            // sync between the edit and the check, which is the correct §7 behavior, not a
+            // failure. Re-arm when that happens; the loop wraps at most once per few seconds,
+            // so consecutive instant flushes mean something is actually wrong.
+            bool observedArmed = false;
+            for (int attempt = 0; attempt < 3 && !observedArmed; attempt++) {
+                manager.OnNext(new FakeEdit(), false);
+                await manager.PumpOnceAsync();
+                observedArmed = manager.Scheduler.HasPending;
+                if (!observedArmed) {
+                    await Task.Delay(200);
+                }
+            }
+            Assert.True(observedArmed, "The edit did not arm the debounce.");
 
             Assert.True(await WaitUntilAsync(() => !manager!.Scheduler.HasPending),
                 "No playbackStarted arrived, so the pending sync was never flushed. " +
